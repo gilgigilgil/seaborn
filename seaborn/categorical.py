@@ -584,6 +584,7 @@ class _ViolinPlotter(_CategoricalPlotter):
         elif np.asarray(weights).shape != np.asarray(self.plot_data).shape:
             error = "Weights and data must be the same shape"
             raise ValueError(error)
+        self.weights = weights
 
         for i, group_data in enumerate(self.plot_data):
 
@@ -719,6 +720,16 @@ class _ViolinPlotter(_CategoricalPlotter):
         support_max = x.max() + bw * cut
         return np.linspace(support_min, support_max, gridsize)
 
+    def weighted_quantile(self, data, quantiles, weights):
+        """Like numpy percentile, but with weights"""
+        ind_sorted = np.argsort(data)
+        sorted_data = data[ind_sorted]
+        sorted_weights = weights[ind_sorted]
+        Sn = np.cumsum(sorted_weights)
+        Pn = (Sn - 0.5 * sorted_weights) / np.sum(sorted_weights)
+        return np.fromiter((np.interp(quantile, Pn, sorted_data)
+                            for quantile in quantiles), float)
+
     def scale_area(self, density, max_density, scale_hue):
         """Scale the relative area under the KDE curve.
 
@@ -780,6 +791,7 @@ class _ViolinPlotter(_CategoricalPlotter):
 
     def draw_violins(self, ax):
         """Draw the violins onto `ax`."""
+        weights = self.weights
         fill_func = ax.fill_betweenx if self.orient == "v" else ax.fill_between
         for i, group_data in enumerate(self.plot_data):
 
@@ -820,11 +832,13 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                 # Draw box and whisker information
                 if self.inner.startswith("box"):
-                    self.draw_box_lines(ax, violin_data, support, density, i)
+                    self.draw_box_lines(ax, violin_data, support,
+                                        density, i, weights[i])
 
                 # Draw quartile lines
                 elif self.inner.startswith("quart"):
-                    self.draw_quartiles(ax, violin_data, support, density, i)
+                    self.draw_quartiles(ax, violin_data, support,
+                                        density, i, weights[i])
 
                 # Draw stick observations
                 elif self.inner.startswith("stick"):
@@ -891,7 +905,8 @@ class _ViolinPlotter(_CategoricalPlotter):
                         if self.inner.startswith("quart"):
                             self.draw_quartiles(ax, violin_data,
                                                 support, density, i,
-                                                ["left", "right"][j])
+                                                ["left", "right"][j],
+                                                weights[i][hue_mask])
 
                         # Draw stick observations
                         elif self.inner.startswith("stick"):
@@ -909,8 +924,8 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                         # Draw box and whisker information
                         if self.inner.startswith("box"):
-                            self.draw_box_lines(ax, violin_data,
-                                                support, density, i)
+                            self.draw_box_lines(ax, violin_data, support,
+                                                density, i, weights[i])
 
                         # Draw point observations
                         elif self.inner.startswith("point"):
@@ -936,15 +951,16 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                         # Draw box and whisker information
                         if self.inner.startswith("box"):
-                            self.draw_box_lines(ax, violin_data,
-                                                support, density,
-                                                i + offsets[j])
+                            self.draw_box_lines(ax, violin_data, support,
+                                                density, i + offsets[j],
+                                                weights[i][hue_mask])
 
                         # Draw quartile lines
                         elif self.inner.startswith("quart"):
                             self.draw_quartiles(ax, violin_data,
                                                 support, density,
-                                                i + offsets[j])
+                                                i + offsets[j],
+                                                weights[i][hue_mask])
 
                         # Draw stick observations
                         elif self.inner.startswith("stick"):
@@ -970,10 +986,12 @@ class _ViolinPlotter(_CategoricalPlotter):
                     color=self.gray,
                     linewidth=self.linewidth)
 
-    def draw_box_lines(self, ax, data, support, density, center):
+    def draw_box_lines(self, ax, data, support, density, center, weights):
         """Draw boxplot information at center of the density."""
         # Compute the boxplot statistics
-        q25, q50, q75 = np.percentile(data, [25, 50, 75])
+        # q25, q50, q75 = np.percentile(data, [25, 50, 75])
+        q25, q50, q75 = self.weighted_quantile(data, [0.25, 0.50, 0.75],
+                                               weights)
         whisker_lim = 1.5 * iqr(data)
         h1 = np.min(data[data >= (q25 - whisker_lim)])
         h2 = np.max(data[data <= (q75 + whisker_lim)])
@@ -1004,9 +1022,12 @@ class _ViolinPlotter(_CategoricalPlotter):
                        edgecolor=self.gray,
                        s=np.square(self.linewidth * 2))
 
-    def draw_quartiles(self, ax, data, support, density, center, split=False):
+    def draw_quartiles(self, ax, data, support, density,
+                       center, weights, split=False):
         """Draw the quartiles as lines at width of density."""
-        q25, q50, q75 = np.percentile(data, [25, 50, 75])
+        # q25, q50, q75 = np.percentile(data, [25, 50, 75])
+        q25, q50, q75 = self.weighted_quantile(data, [0.25, 0.50, 0.75],
+                                               weights)
 
         self.draw_to_density(ax, center, q25, support, density, split,
                              linewidth=self.linewidth,
