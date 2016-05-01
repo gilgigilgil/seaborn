@@ -9,6 +9,7 @@ import matplotlib as mpl
 from matplotlib.collections import PatchCollection
 import matplotlib.patches as Patches
 import matplotlib.pyplot as plt
+import statsmodels.api as sm
 import warnings
 
 from .external.six import string_types
@@ -533,14 +534,14 @@ class _BoxPlotter(_CategoricalPlotter):
 
 class _ViolinPlotter(_CategoricalPlotter):
 
-    def __init__(self, x, y, hue, data, order, hue_order,
+    def __init__(self, x, y, hue, data, weights, order, hue_order,
                  bw, cut, scale, scale_hue, gridsize,
                  width, inner, split, orient, linewidth,
                  color, palette, saturation):
 
         self.establish_variables(x, y, hue, data, orient, order, hue_order)
         self.establish_colors(color, palette, saturation)
-        self.estimate_densities(bw, cut, scale, scale_hue, gridsize)
+        self.estimate_densities(bw, cut, scale, scale_hue, gridsize, weights)
 
         self.gridsize = gridsize
         self.width = width
@@ -562,7 +563,7 @@ class _ViolinPlotter(_CategoricalPlotter):
             linewidth = mpl.rcParams["lines.linewidth"]
         self.linewidth = linewidth
 
-    def estimate_densities(self, bw, cut, scale, scale_hue, gridsize):
+    def estimate_densities(self, bw, cut, scale, scale_hue, gridsize, weights):
         """Find the support and density for all of the data."""
         # Initialize data structures to keep track of plotting data
         if self.hue_names is None:
@@ -604,7 +605,7 @@ class _ViolinPlotter(_CategoricalPlotter):
                     continue
 
                 # Fit the KDE and get the used bandwidth size
-                kde, bw_used = self.fit_kde(kde_data, bw)
+                kde, bw_used = self.fit_kde(kde_data, bw, weights[i])
 
                 # Determine the support grid and get the density over it
                 support_i = self.kde_support(kde_data, bw_used, cut, gridsize)
@@ -653,7 +654,7 @@ class _ViolinPlotter(_CategoricalPlotter):
                         continue
 
                     # Fit the KDE and get the used bandwidth size
-                    kde, bw_used = self.fit_kde(kde_data, bw)
+                    kde, bw_used = self.fit_kde(kde_data, bw, weights[i])
 
                     # Determine the support grid and get the density over it
                     support_ij = self.kde_support(kde_data, bw_used,
@@ -687,20 +688,13 @@ class _ViolinPlotter(_CategoricalPlotter):
         self.support = support
         self.density = density
 
-    def fit_kde(self, x, bw):
+    def fit_kde(self, x, bw, w):
         """Estimate a KDE for a vector of data with flexible bandwidth."""
-        # Allow for the use of old scipy where `bw` is fixed
-        try:
-            kde = stats.gaussian_kde(x, bw)
-        except TypeError:
-            kde = stats.gaussian_kde(x)
-            if bw != "scott":  # scipy default
-                msg = ("Ignoring bandwidth choice, "
-                       "please upgrade scipy to use a different bandwidth.")
-                warnings.warn(msg, UserWarning)
+        kde = sm.nonparametric.KDEUnivariate(x)
+        kde.fit(fft=False, weights=w, bw=bw)
 
         # Extract the numeric bandwidth from the KDE object
-        bw_used = kde.factor
+        bw_used = kde.bw
 
         # At this point, bw will be a numeric scale factor.
         # To get the actual bandwidth of the kernel, we multiple by the
@@ -2305,10 +2299,11 @@ boxplot.__doc__ = dedent("""\
     """).format(**_categorical_docs)
 
 
-def violinplot(x=None, y=None, hue=None, data=None, order=None, hue_order=None,
-               bw="scott", cut=2, scale="area", scale_hue=True, gridsize=100,
-               width=.8, inner="box", split=False, orient=None, linewidth=None,
-               color=None, palette=None, saturation=.75, ax=None, **kwargs):
+def violinplot(x=None, y=None, hue=None, data=None, weights=None, order=None,
+               hue_order=None, bw="scott", cut=2, scale="area", scale_hue=True,
+               gridsize=100, width=.8, inner="box", split=False, orient=None,
+               linewidth=None, color=None, palette=None, saturation=.75,
+               ax=None, **kwargs):
 
     # Try to handle broken backwards-compatability
     # This should help with the lack of a smooth deprecation,
@@ -2341,7 +2336,7 @@ def violinplot(x=None, y=None, hue=None, data=None, order=None, hue_order=None,
     if warn:
         warnings.warn(msg, UserWarning)
 
-    plotter = _ViolinPlotter(x, y, hue, data, order, hue_order,
+    plotter = _ViolinPlotter(x, y, hue, data, weights, order, hue_order,
                              bw, cut, scale, scale_hue, gridsize,
                              width, inner, split, orient, linewidth,
                              color, palette, saturation)
