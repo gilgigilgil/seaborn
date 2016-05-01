@@ -578,6 +578,13 @@ class _ViolinPlotter(_CategoricalPlotter):
             counts = np.zeros(size)
             max_density = np.zeros(size)
 
+        if weights is None:
+            weights = [np.ones_like(group_data)
+                       for group_data in self.plot_data]
+        elif np.asarray(weights).shape != np.asarray(self.plot_data).shape:
+            error = "Weights and data must be the same shape"
+            raise ValueError(error)
+
         for i, group_data in enumerate(self.plot_data):
 
             # Option 1: we have a single level of grouping
@@ -653,8 +660,10 @@ class _ViolinPlotter(_CategoricalPlotter):
                         max_density[i, j] = 0
                         continue
 
+                    # TODO Test this!
                     # Fit the KDE and get the used bandwidth size
-                    kde, bw_used = self.fit_kde(kde_data, bw, weights[i])
+                    kde, bw_used = self.fit_kde(kde_data, bw,
+                                                weights[i][hue_mask])
 
                     # Determine the support grid and get the density over it
                     support_ij = self.kde_support(kde_data, bw_used,
