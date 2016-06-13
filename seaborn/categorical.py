@@ -31,8 +31,8 @@ class _CategoricalPlotter(object):
     width = .8
 
     def establish_variables(self, x=None, y=None, hue=None, data=None,
-                            orient=None, order=None, hue_order=None,
-                            units=None):
+                            weights=None, orient=None, order=None,
+                            hue_order=None, units=None):
         """Convert input specification into a common representation."""
         # Option 1:
         # We are plotting a wide-form dataset
@@ -69,9 +69,14 @@ class _CategoricalPlotter(object):
                     for col in data:
                         try:
                             data[col].astype(np.float)
+                            # We dont want to plot the weights
+                            if (weights is not None and isinstance(weights,
+                                                                   str)):
+                                continue
                             order.append(col)
                         except ValueError:
                             pass
+
                 plot_data = data[order]
                 group_names = order
                 group_label = data.columns.name
@@ -80,16 +85,39 @@ class _CategoricalPlotter(object):
                 iter_data = plot_data.iteritems()
                 plot_data = [np.asarray(s, np.float) for k, s in iter_data]
 
+                if weights is not None and isinstance(weights, str):
+                    plot_weights = [np.asarray(data[weights], np.float)
+                                    for _, _ in iter_data]
+
             # Option 1b:
             # The input data is an array or list
             # ----------------------------------
 
             else:
+                if weights is not None and isinstance(weights, str):
+                    error = ("Weights must be an array-like "
+                             "in case of array-like data")
+                    raise ValueError(error)
 
                 # We can't reorder the data
                 if order is not None:
                     error = "Input data must be a pandas object to reorder"
                     raise ValueError(error)
+
+                # Reshape for weights, we just check for None later
+                if hasattr(weights, "shape"):
+                    if len(weights.shape) == 1:
+                        if np.isscalar(weights[0]):
+                            plot_weights = [weights]
+                        else:
+                            plot_weights = list(weights)
+                    else:
+                        error = ("Input `weights` can have no "
+                                 "more than 1 dimension")
+                        raise ValueError(error)
+
+                elif np.isscalar(weights[0]):
+                    plot_weights = [weights]
 
                 # The input data is an array
                 if hasattr(data, "shape"):
@@ -125,6 +153,9 @@ class _CategoricalPlotter(object):
 
                 # Convert to a list of arrays, the common representation
                 plot_data = [np.asarray(d, np.float) for d in plot_data]
+                if weights is not None:
+                    plot_weights = [np.asarray(w, np.float)
+                                    for w in plot_weights]
 
                 # The group names will just be numeric indices
                 group_names = list(range((len(plot_data))))
@@ -144,9 +175,10 @@ class _CategoricalPlotter(object):
                 y = data.get(y, y)
                 hue = data.get(hue, hue)
                 units = data.get(units, units)
+                weights = data.get(weights, weights)
 
             # Validate the inputs
-            for input in [x, y, hue, units]:
+            for input in [x, y, hue, units, weights]:
                 if isinstance(input, string_types):
                     err = "Could not interpret input '{}'".format(input)
                     raise ValueError(err)
@@ -164,6 +196,8 @@ class _CategoricalPlotter(object):
 
                 # Put them into the common representation
                 plot_data = [np.asarray(vals)]
+                if weights is not None:
+                    plot_weights = [np.asarray(weights)]
 
                 # Get a label for the value axis
                 if hasattr(vals, "name"):
@@ -202,6 +236,10 @@ class _CategoricalPlotter(object):
                 # Group the numeric data
                 plot_data, value_label = self._group_longform(vals, groups,
                                                               group_names)
+                # Same for the weights
+                if weights is not None:
+                    plot_weights, _ = self._group_longform(weights, groups,
+                                                           group_names)
 
                 # Now handle the hue levels for nested ordering
                 if hue is None:
@@ -235,6 +273,10 @@ class _CategoricalPlotter(object):
         self.hue_title = hue_title
         self.hue_names = hue_names
         self.plot_units = plot_units
+
+        if weights is None:
+            plot_weights = np.ones_like(plot_data, dtype=np.float)
+        self.plot_weights = plot_weights
 
     def _group_longform(self, vals, grouper, order):
         """Group a long-form variable by another with correct order."""
@@ -539,9 +581,10 @@ class _ViolinPlotter(_CategoricalPlotter):
                  width, inner, split, orient, linewidth,
                  color, palette, saturation):
 
-        self.establish_variables(x, y, hue, data, orient, order, hue_order)
+        self.establish_variables(x, y, hue, data, weights, orient,
+                                 order, hue_order)
         self.establish_colors(color, palette, saturation)
-        self.estimate_densities(bw, cut, scale, scale_hue, gridsize, weights)
+        self.estimate_densities(bw, cut, scale, scale_hue, gridsize)
 
         self.gridsize = gridsize
         self.width = width
@@ -563,7 +606,7 @@ class _ViolinPlotter(_CategoricalPlotter):
             linewidth = mpl.rcParams["lines.linewidth"]
         self.linewidth = linewidth
 
-    def estimate_densities(self, bw, cut, scale, scale_hue, gridsize, weights):
+    def estimate_densities(self, bw, cut, scale, scale_hue, gridsize):
         """Find the support and density for all of the data."""
         # Initialize data structures to keep track of plotting data
         if self.hue_names is None:
@@ -578,14 +621,6 @@ class _ViolinPlotter(_CategoricalPlotter):
             counts = np.zeros(size)
             max_density = np.zeros(size)
 
-        if weights is None:
-            weights = [np.ones_like(group_data)
-                       for group_data in self.plot_data]
-        elif np.asarray(weights).shape != np.asarray(self.plot_data).shape:
-            error = "Weights and data must be the same shape"
-            raise ValueError(error)
-        self.weights = weights
-
         for i, group_data in enumerate(self.plot_data):
 
             # Option 1: we have a single level of grouping
@@ -595,6 +630,7 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                 # Strip missing datapoints
                 kde_data = remove_na(group_data)
+                weight_data = remove_na(self.plot_weights[i])
 
                 # Handle special case of no data at this level
                 if kde_data.size == 0:
@@ -613,7 +649,7 @@ class _ViolinPlotter(_CategoricalPlotter):
                     continue
 
                 # Fit the KDE and get the used bandwidth size
-                kde, bw_used = self.fit_kde(kde_data, bw, weights[i])
+                kde, bw_used = self.fit_kde(kde_data, bw, weight_data)
 
                 # Determine the support grid and get the density over it
                 support_i = self.kde_support(kde_data, bw_used, cut, gridsize)
@@ -644,6 +680,7 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                     # Strip missing datapoints
                     kde_data = remove_na(group_data[hue_mask])
+                    weight_data = remove_na(self.plot_weights[i][hue_mask])
 
                     # Handle special case of no data at this level
                     if kde_data.size == 0:
@@ -661,10 +698,8 @@ class _ViolinPlotter(_CategoricalPlotter):
                         max_density[i, j] = 0
                         continue
 
-                    # TODO Test this!
                     # Fit the KDE and get the used bandwidth size
-                    kde, bw_used = self.fit_kde(kde_data, bw,
-                                                weights[i][hue_mask])
+                    kde, bw_used = self.fit_kde(kde_data, bw, weight_data)
 
                     # Determine the support grid and get the density over it
                     support_ij = self.kde_support(kde_data, bw_used,
@@ -791,7 +826,6 @@ class _ViolinPlotter(_CategoricalPlotter):
 
     def draw_violins(self, ax):
         """Draw the violins onto `ax`."""
-        weights = self.weights
         fill_func = ax.fill_betweenx if self.orient == "v" else ax.fill_between
         for i, group_data in enumerate(self.plot_data):
 
@@ -829,16 +863,17 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                 # Get a nan-free vector of datapoints
                 violin_data = remove_na(group_data)
+                violin_weights = remove_na(self.plot_weights[i])
 
                 # Draw box and whisker information
                 if self.inner.startswith("box"):
                     self.draw_box_lines(ax, violin_data, support,
-                                        density, i, weights[i])
+                                        density, i, violin_weights)
 
                 # Draw quartile lines
                 elif self.inner.startswith("quart"):
                     self.draw_quartiles(ax, violin_data, support,
-                                        density, i, weights[i])
+                                        density, i, violin_weights)
 
                 # Draw stick observations
                 elif self.inner.startswith("stick"):
@@ -900,13 +935,15 @@ class _ViolinPlotter(_CategoricalPlotter):
                         # Get a nan-free vector of datapoints
                         hue_mask = self.plot_hues[i] == hue_level
                         violin_data = remove_na(group_data[hue_mask])
+                        violin_weights = remove_na(
+                                self.plot_weights[i][hue_mask])
 
                         # Draw quartile lines
                         if self.inner.startswith("quart"):
                             self.draw_quartiles(ax, violin_data,
                                                 support, density, i,
                                                 ["left", "right"][j],
-                                                weights[i][hue_mask])
+                                                violin_weights)
 
                         # Draw stick observations
                         elif self.inner.startswith("stick"):
@@ -921,11 +958,12 @@ class _ViolinPlotter(_CategoricalPlotter):
 
                         # Get the whole vector for this group level
                         violin_data = remove_na(group_data)
+                        violin_weights = remove_na(self.plot_weights[i])
 
                         # Draw box and whisker information
                         if self.inner.startswith("box"):
                             self.draw_box_lines(ax, violin_data, support,
-                                                density, i, weights[i])
+                                                density, i, violin_weights)
 
                         # Draw point observations
                         elif self.inner.startswith("point"):
@@ -948,19 +986,21 @@ class _ViolinPlotter(_CategoricalPlotter):
                         # Get a nan-free vector of datapoints
                         hue_mask = self.plot_hues[i] == hue_level
                         violin_data = remove_na(group_data[hue_mask])
+                        violin_weights = remove_na(
+                                self.plot_weights[i][hue_mask])
 
                         # Draw box and whisker information
                         if self.inner.startswith("box"):
                             self.draw_box_lines(ax, violin_data, support,
                                                 density, i + offsets[j],
-                                                weights[i][hue_mask])
+                                                violin_weights)
 
                         # Draw quartile lines
                         elif self.inner.startswith("quart"):
                             self.draw_quartiles(ax, violin_data,
                                                 support, density,
                                                 i + offsets[j],
-                                                weights[i][hue_mask])
+                                                violin_weights)
 
                         # Draw stick observations
                         elif self.inner.startswith("stick"):
