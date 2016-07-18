@@ -31,8 +31,8 @@ class _CategoricalPlotter(object):
     width = .8
 
     def establish_variables(self, x=None, y=None, hue=None, data=None,
-                            weights=None, orient=None, order=None,
-                            hue_order=None, units=None):
+                            weights=None, reference=None, orient=None,
+                            order=None, hue_order=None, units=None):
         """Convert input specification into a common representation."""
         # Option 1:
         # We are plotting a wide-form dataset
@@ -89,6 +89,10 @@ class _CategoricalPlotter(object):
                     plot_weights = [np.asarray(data[weights], np.float)
                                     for _, _ in iter_data]
 
+                if reference is not None and isinstance(reference, str):
+                    plot_ref = [np.asarray(data[reference], np.float)
+                                for _, _ in iter_data]
+
             # Option 1b:
             # The input data is an array or list
             # ----------------------------------
@@ -118,6 +122,20 @@ class _CategoricalPlotter(object):
 
                 elif np.isscalar(weights[0]):
                     plot_weights = [weights]
+
+                if hasattr(reference, "shape"):
+                    if len(reference.shape) == 1:
+                        if np.isscalar(reference[0]):
+                            plot_ref = [reference]
+                        else:
+                            plot_ref = list(reference)
+                    else:
+                        error = ("Input `reference` can have no "
+                                 "more than 1 dimension")
+                        raise ValueError(error)
+
+                elif np.isscalar(reference[0]):
+                    plot_ref = [reference]
 
                 # The input data is an array
                 if hasattr(data, "shape"):
@@ -157,6 +175,9 @@ class _CategoricalPlotter(object):
                     plot_weights = [np.asarray(w, np.float)
                                     for w in plot_weights]
 
+                if reference is not None:
+                    plot_ref = [np.asarray(w, np.float) for w in plot_ref]
+
                 # The group names will just be numeric indices
                 group_names = list(range((len(plot_data))))
 
@@ -176,9 +197,10 @@ class _CategoricalPlotter(object):
                 hue = data.get(hue, hue)
                 units = data.get(units, units)
                 weights = data.get(weights, weights)
+                reference = data.get(reference, reference)
 
             # Validate the inputs
-            for input in [x, y, hue, units, weights]:
+            for input in [x, y, hue, units, weights, reference]:
                 if isinstance(input, string_types):
                     err = "Could not interpret input '{}'".format(input)
                     raise ValueError(err)
@@ -198,6 +220,9 @@ class _CategoricalPlotter(object):
                 plot_data = [np.asarray(vals)]
                 if weights is not None:
                     plot_weights = [np.asarray(weights)]
+
+                if reference is not None:
+                    plot_ref = [np.asarray(reference)]
 
                 # Get a label for the value axis
                 if hasattr(vals, "name"):
@@ -241,6 +266,10 @@ class _CategoricalPlotter(object):
                     plot_weights, _ = self._group_longform(weights, groups,
                                                            group_names)
 
+                if reference is not None:
+                    plot_ref, _ = self._group_longform(reference, groups,
+                                                       group_names)
+
                 # Now handle the hue levels for nested ordering
                 if hue is None:
                     plot_hues = None
@@ -276,7 +305,11 @@ class _CategoricalPlotter(object):
 
         if weights is None:
             plot_weights = np.ones_like(plot_data, dtype=np.float)
+        if reference is None:
+            plot_ref = None
+
         self.plot_weights = plot_weights
+        self.plot_ref = plot_ref
 
     def _group_longform(self, vals, grouper, order):
         """Group a long-form variable by another with correct order."""
@@ -576,12 +609,12 @@ class _BoxPlotter(_CategoricalPlotter):
 
 class _ViolinPlotter(_CategoricalPlotter):
 
-    def __init__(self, x, y, hue, data, weights, order, hue_order,
+    def __init__(self, x, y, hue, data, weights, reference, order, hue_order,
                  bw, cut, scale, scale_hue, gridsize,
                  width, inner, split, orient, linewidth,
                  color, palette, saturation):
 
-        self.establish_variables(x, y, hue, data, weights, orient,
+        self.establish_variables(x, y, hue, data, weights, reference, orient,
                                  order, hue_order)
         self.establish_colors(color, palette, saturation)
         self.estimate_densities(bw, cut, scale, scale_hue, gridsize)
@@ -755,11 +788,11 @@ class _ViolinPlotter(_CategoricalPlotter):
         support_max = x.max() + bw * cut
         return np.linspace(support_min, support_max, gridsize)
 
-    def weighted_quantile(self, data, quantiles, weights):
+    def weighted_quantile(self, data, quantiles, weight):
         """Like numpy percentile, but with weights"""
         ind_sorted = np.argsort(data)
         sorted_data = data[ind_sorted]
-        sorted_weights = weights[ind_sorted]
+        sorted_weights = weight[ind_sorted]
         Sn = np.cumsum(sorted_weights)
         Pn = (Sn - 0.5 * sorted_weights) / np.sum(sorted_weights)
         return np.fromiter((np.interp(quantile, Pn, sorted_data)
@@ -865,6 +898,15 @@ class _ViolinPlotter(_CategoricalPlotter):
                 violin_data = remove_na(group_data)
                 violin_weights = remove_na(self.plot_weights[i])
 
+                if self.plot_ref is not None:
+                    violin_ref = remove_na(self.plot_ref[i])
+                else:
+                    violin_ref = None
+
+                if self.plot_ref is not None:
+                    self.draw_reference(ax, violin_ref, support,
+                                        density, i)
+
                 # Draw box and whisker information
                 if self.inner.startswith("box"):
                     self.draw_box_lines(ax, violin_data, support,
@@ -938,12 +980,23 @@ class _ViolinPlotter(_CategoricalPlotter):
                         violin_weights = remove_na(
                                 self.plot_weights[i][hue_mask])
 
+                        if self.plot_ref is not None:
+                            violin_ref = remove_na(self.plot_ref[i][hue_mask])
+                        else:
+                            violin_ref = None
+
                         # Draw quartile lines
                         if self.inner.startswith("quart"):
                             self.draw_quartiles(ax, violin_data,
                                                 support, density, i,
-                                                ["left", "right"][j],
-                                                violin_weights)
+                                                violin_weights,
+                                                ["left", "right"][j])
+
+                        # Draw reference
+                        if self.plot_ref is not None:
+                            self.draw_reference(ax, self.plot_ref[i],
+                                                support, density, i,
+                                                ["left", "right"][j])
 
                         # Draw stick observations
                         elif self.inner.startswith("stick"):
@@ -959,6 +1012,7 @@ class _ViolinPlotter(_CategoricalPlotter):
                         # Get the whole vector for this group level
                         violin_data = remove_na(group_data)
                         violin_weights = remove_na(self.plot_weights[i])
+                        # violin_ref = remove_na(self.plot_ref[i])
 
                         # Draw box and whisker information
                         if self.inner.startswith("box"):
@@ -989,6 +1043,11 @@ class _ViolinPlotter(_CategoricalPlotter):
                         violin_weights = remove_na(
                                 self.plot_weights[i][hue_mask])
 
+                        if self.plot_ref is not None:
+                            violin_ref = remove_na(self.plot_ref[i][hue_mask])
+                        else:
+                            violin_ref = None
+
                         # Draw box and whisker information
                         if self.inner.startswith("box"):
                             self.draw_box_lines(ax, violin_data, support,
@@ -1001,6 +1060,12 @@ class _ViolinPlotter(_CategoricalPlotter):
                                                 support, density,
                                                 i + offsets[j],
                                                 violin_weights)
+
+                        # Draw reference
+                        if self.plot_ref is not None:
+                            self.draw_reference(ax, violin_ref,
+                                                support, density,
+                                                i + offsets[j])
 
                         # Draw stick observations
                         elif self.inner.startswith("stick"):
@@ -1026,12 +1091,12 @@ class _ViolinPlotter(_CategoricalPlotter):
                     color=self.gray,
                     linewidth=self.linewidth)
 
-    def draw_box_lines(self, ax, data, support, density, center, weights):
+    def draw_box_lines(self, ax, data, support, density, center, weight):
         """Draw boxplot information at center of the density."""
         # Compute the boxplot statistics
         # q25, q50, q75 = np.percentile(data, [25, 50, 75])
         q25, q50, q75 = self.weighted_quantile(data, [0.25, 0.50, 0.75],
-                                               weights)
+                                               weight)
         whisker_lim = 1.5 * iqr(data)
         h1 = np.min(data[data >= (q25 - whisker_lim)])
         h2 = np.max(data[data <= (q75 + whisker_lim)])
@@ -1063,11 +1128,11 @@ class _ViolinPlotter(_CategoricalPlotter):
                        s=np.square(self.linewidth * 2))
 
     def draw_quartiles(self, ax, data, support, density,
-                       center, weights, split=False):
+                       center, weight, split=False):
         """Draw the quartiles as lines at width of density."""
         # q25, q50, q75 = np.percentile(data, [25, 50, 75])
         q25, q50, q75 = self.weighted_quantile(data, [0.25, 0.50, 0.75],
-                                               weights)
+                                               weight)
 
         self.draw_to_density(ax, center, q25, support, density, split,
                              linewidth=self.linewidth,
@@ -1078,6 +1143,18 @@ class _ViolinPlotter(_CategoricalPlotter):
         self.draw_to_density(ax, center, q75, support, density, split,
                              linewidth=self.linewidth,
                              dashes=[self.linewidth * 1.5] * 2)
+
+    def draw_reference(self, ax, reference, support, density,
+                       center, split=False):
+        """Draw a reference value as a straight line"""
+        # self.draw_to_density(ax, center, reference[0], support, density, split,
+        #                      linewidth=self.linewidth * 0.5)
+        ax.scatter(center, reference[0],
+                   zorder=3,
+                   color="white",
+                   edgecolor=self.gray,
+                   linewidths=2,
+                   s=np.square(self.linewidth * 4))
 
     def draw_points(self, ax, data, center):
         """Draw individual observations as points at middle of the violin."""
@@ -2369,11 +2446,11 @@ boxplot.__doc__ = dedent("""\
     """).format(**_categorical_docs)
 
 
-def violinplot(x=None, y=None, hue=None, data=None, weights=None, order=None,
-               hue_order=None, bw="scott", cut=2, scale="area", scale_hue=True,
-               gridsize=100, width=.8, inner="box", split=False, orient=None,
-               linewidth=None, color=None, palette=None, saturation=.75,
-               ax=None, **kwargs):
+def violinplot(x=None, y=None, hue=None, data=None, weights=None,
+               reference=None, order=None, hue_order=None, bw="scott", cut=2,
+               scale="area", scale_hue=True, gridsize=100, width=.8,
+               inner="box", split=False, orient=None, linewidth=None,
+               color=None, palette=None, saturation=.75, ax=None, **kwargs):
 
     # Try to handle broken backwards-compatability
     # This should help with the lack of a smooth deprecation,
@@ -2406,8 +2483,8 @@ def violinplot(x=None, y=None, hue=None, data=None, weights=None, order=None,
     if warn:
         warnings.warn(msg, UserWarning)
 
-    plotter = _ViolinPlotter(x, y, hue, data, weights, order, hue_order,
-                             bw, cut, scale, scale_hue, gridsize,
+    plotter = _ViolinPlotter(x, y, hue, data, weights, reference, order,
+                             hue_order, bw, cut, scale, scale_hue, gridsize,
                              width, inner, split, orient, linewidth,
                              color, palette, saturation)
 
